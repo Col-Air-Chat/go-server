@@ -11,6 +11,7 @@ import (
 
 func CollectRoutes(r *gin.Engine) *gin.Engine {
 	r.Use(middleware.TimeoutMiddleware(3 * time.Second))
+	r.Use(middleware.CorsMiddleware())
 	r.GET("/", appController.GetServerStatus)
 	r.POST("/user/register", userController.Register)
 	r.POST("/user/login", userController.Login)

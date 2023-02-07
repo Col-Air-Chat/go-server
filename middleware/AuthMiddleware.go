@@ -4,14 +4,10 @@ import (
 	"net/http"
 	"strings"
 
+	"col-air-go/common"
 	"col-air-go/jwt"
-	"col-air-go/redis"
 	"col-air-go/util"
 	"github.com/gin-gonic/gin"
-)
-
-var (
-	rdClient = redis.GetRedisClient()
 )
 
 func AuthMiddleware() gin.HandlerFunc {
@@ -23,9 +19,24 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 		token = token[7:]
-		claims, _ := jwt.ParseToken(token, "col-air-go-token-main")
+		claims, err := jwt.ParseToken(token, "col-air-go-token-main")
+		if err != nil {
+			util.Response(c, http.StatusUnauthorized, 401, nil, "missing or incorrect credentials.")
+			c.Abort()
+			return
+		}
 		msg := util.Int64ToString(util.MurmurHash64([]byte(token + "|#ColAir")))
-		resultUid, _ := rdClient.Get(msg).Result()
+		var resultChan = make(chan interface{})
+		var resultErrChan = make(chan error)
+		go common.GetDataFromRedis(resultChan, resultErrChan, msg)
+		resultErr := <-resultErrChan
+		if resultErr != nil {
+			util.Response(c, http.StatusUnauthorized, 401, nil, "missing or incorrect credentials.")
+			c.Abort()
+			return
+		}
+		result := <-resultChan
+		resultUid := result
 		if resultUid != claims.UserId {
 			util.Response(c, http.StatusUnauthorized, 401, nil, "missing or incorrect credentials.")
 			c.Abort()

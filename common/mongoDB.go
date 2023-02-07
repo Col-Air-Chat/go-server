@@ -1,4 +1,4 @@
-package mongodb
+package common
 
 import (
 	"context"
@@ -9,11 +9,18 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-var mongoClient *mongo.Client
+var (
+	mongoClient *mongo.Client
+	url         = "mongodb://localhost:27017"
+)
+
+func SetMongoDBConfig(u string) {
+	url = u
+}
 
 func InitMongodb() {
 	var err error
-	mongoClient, err = mongo.NewClient(options.Client().ApplyURI("mongodb://colAir:2XRnh24PsEPrALdS@localhost:27017/?authSource=colair"))
+	mongoClient, err = mongo.NewClient(options.Client().ApplyURI(url))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -33,3 +40,4 @@ func GetMongoDBClient() *mongo.Client {
 func GetContextWithTimeout(timeout time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), timeout)
 }
+

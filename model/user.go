@@ -1,16 +1,26 @@
 package model
 
 type User struct {
-	Username string `json:"username" binding:"required" bson:"username"`
-	Password string `json:"-" binding:"required" bson:"password"`
-	Saying   string `json:"saying" bson:"saying"`
+	Uid      int64  `json:"uid" bson:"uid"`
+	Username string `json:"username" bson:"username"`
+	Password string `json:"-" bson:"password"`
+	Email    string `json:"email" bson:"email"`
+	Phone    string `json:"phone" bson:"phone"`
+	Avatar   string `json:"avatar" bson:"avatar"`
+	Role     int64  `json:"-" bson:"role"`
+	Disabled bool   `json:"-" bson:"disabled" default:"false"`
 }
 
 type UserLogin struct {
-	Username string `json:"username" binding:"required"`
-	Password string `json:"password" binding:"required"`
+	Uid      int64  `json:"uid" bson:"uid" binding:"required"`
+	Password string `json:"password" binding:"required" bson:"password"`
 }
 
-type UserByUserName struct {
-	Username string `json:"username" binding:"required"`
+type UserRegister struct {
+	Email    string `json:"email" binding:"required" bson:"email"`
+	Password string `json:"password" binding:"required" bson:"password"`
+}
+
+type UserByUid struct {
+	Uid int64 `json:"uid" bson:"uid" binding:"required"`
 }

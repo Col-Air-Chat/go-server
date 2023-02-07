@@ -1,0 +1,18 @@
+server:
+  host: localhost
+  port: 8080
+
+websocket:
+  host: localhost
+  port: 8081
+  uri: /ws
+
+mongodb:
+  url: mongodb://colAir:2XRnh24PsEPrALdS@localhost:27017/?authSource=colair
+
+redis:
+  host: localhost:6379
+  password: Col_Air_Redis#20230116
+  db: 0
+  amqp:
+    url: amqp://ColAirRedis:ColAirRedis@localhost:5672/ColRedis

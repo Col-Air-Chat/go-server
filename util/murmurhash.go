@@ -1,7 +1,5 @@
 package util
 
-import "strconv"
-
 const (
 	BIG_M = 0xc6a4a7935bd1e995
 	BIG_R = 47
@@ -55,8 +53,4 @@ func MurmurHash64(data []byte) (h int64) {
 	h *= ibigm
 	h ^= int64(uint64(h) >> BIG_R)
 	return
-}
-
-func Int64ToString(num int64) string {
-	return strconv.FormatInt(num, 10)
 }

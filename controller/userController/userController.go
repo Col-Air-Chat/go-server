@@ -1,10 +1,9 @@
 package userController
 
 import (
+	"col-air-go/common"
 	"col-air-go/jwt"
 	"col-air-go/model"
-	"col-air-go/mongodb"
-	"col-air-go/redis"
 	"col-air-go/util"
 	"encoding/json"
 	"net/http"
@@ -12,27 +11,49 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/streadway/amqp"
-)
-
-var (
-	dbClient = mongodb.GetMongoDBClient()
-	rdClient = redis.GetRedisClient()
-	ch       = redis.GetRedisChannel()
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 func Register(c *gin.Context) {
+	var (
+		dbClient = common.GetMongoDBClient()
+	)
 	var user model.User
-	if err := c.ShouldBindJSON(&user); err != nil {
+	var userRegister model.UserRegister
+	if err := c.ShouldBindJSON(&userRegister); err != nil {
 		util.Fail(c, "invalid request body.")
 		return
 	}
-	if user.Saying == "" {
-		user.Saying = "Hello, I'm " + user.Username
+	user.Username = "NewUser"
+	user.Email = userRegister.Email
+	if util.IsEmail(userRegister.Email) {
+		userCollection := dbClient.Database("colair").Collection("users")
+		ctx, cancel := common.GetContextWithTimeout(5 * time.Second)
+		defer cancel()
+		var result model.User
+		err := userCollection.FindOne(ctx, bson.M{"email": userRegister.Email}).Decode(&result)
+		if err == nil {
+			util.Response(c, http.StatusOK, 400, nil, "email address has been registered.")
+			return
+		}
+	} else {
+		util.Response(c, http.StatusOK, 400, nil, "invalid email address.")
+		return
 	}
-	userCollection := dbClient.Database("colair").Collection("test")
-	ctx, cancel := mongodb.GetContextWithTimeout(5 * time.Second)
+	userCollection := dbClient.Database("colair").Collection("users")
+	ctx, cancel := common.GetContextWithTimeout(5 * time.Second)
 	defer cancel()
-	_, err := userCollection.InsertOne(ctx, user)
+	var result model.User
+	err := userCollection.FindOne(ctx, bson.M{}, options.FindOne().SetSort(bson.M{"uid": -1})).Decode(&result)
+	println(result.Uid)
+	if err == nil {
+		user.Uid = result.Uid + 1
+	} else {
+		user.Uid = 10001
+	}
+	user.Password = util.Sha256(userRegister.Password + "colair" + util.Int64ToString(user.Uid))
+	_, err = userCollection.InsertOne(ctx, user)
 	if err != nil {
 		util.Response(c, http.StatusInternalServerError, 500, nil, err.Error())
 		return
@@ -41,21 +62,31 @@ func Register(c *gin.Context) {
 }
 
 func Login(c *gin.Context) {
+	var (
+		dbClient = common.GetMongoDBClient()
+		ch       = common.GetRedisChannel()
+	)
 	var user model.UserLogin
 	if err := c.ShouldBindJSON(&user); err != nil {
 		util.Fail(c, "invalid request body.")
 		return
 	}
-	userCollection := dbClient.Database("colair").Collection("test")
-	ctx, cancel := mongodb.GetContextWithTimeout(5 * time.Second)
+	user.Password = util.Sha256(user.Password + "colair" + util.Int64ToString(user.Uid))
+	userCollection := dbClient.Database("colair").Collection("users")
+	ctx, cancel := common.GetContextWithTimeout(5 * time.Second)
 	defer cancel()
 	var result model.User
 	err := userCollection.FindOne(ctx, user).Decode(&result)
 	if err != nil {
-		util.Response(c, http.StatusUnauthorized, 401, nil, "missing or incorrect credentials.")
+		util.Response(c, http.StatusOK, 402, nil, "account or password is incorrect.")
 		return
 	}
-	token, err := jwt.GenerateToken(result.Username)
+	if result.Disabled {
+		util.Response(c, http.StatusOK, 403, nil, "account has been disabled.")
+		return
+	}
+	userId := util.Int64ToString(result.Uid)
+	token, err := jwt.GenerateToken(userId)
 	if err != nil {
 		util.Response(c, http.StatusInternalServerError, 500, nil, err.Error())
 		return
@@ -68,13 +99,13 @@ func Login(c *gin.Context) {
 	cmd := []amqp.Table{
 		{
 			"type":  "set",
-			"key":   result.Username + ":info",
+			"key":   userId + ":info",
 			"value": string(userJson),
 		},
 		{
 			"type":   "set",
 			"key":    util.Int64ToString(util.MurmurHash64([]byte(token + "|#ColAir"))),
-			"value":  result.Username,
+			"value":  userId,
 			"expire": 7 * 24 * time.Hour,
 		},
 	}
@@ -86,18 +117,62 @@ func Login(c *gin.Context) {
 		Body: cmdJson,
 	}
 	ch.Publish("", "redis", false, false, msg)
-	util.Success(c, gin.H{"token": token}, "login successfully.")
+	common.GetCache().Set(util.Int64ToString(util.MurmurHash64([]byte(token+"|#ColAir"))), userId, common.CacheExpire(7*24*time.Hour))
+	common.GetCache().Set(userId+":info", string(userJson), common.CacheExpire(1*24*time.Hour))
+	util.Success(c, gin.H{"authorizationToken": token, "userInfo": result}, "login successfully.")
 }
 
 func GetUserInfo(c *gin.Context) {
-	username := c.GetString("userId")
-	userJson, err := rdClient.Get(username + ":info").Result()
-	if err != nil {
-		util.Response(c, http.StatusInternalServerError, 500, nil, err.Error())
-		return
-	}
+	userId := c.GetString("userId")
+	key := userId + ":info"
+	var result interface{}
 	var user model.User
-	err = json.Unmarshal([]byte(userJson), &user)
+	var resultChan = make(chan interface{})
+	var resultErrChan = make(chan error)
+	go common.GetDataFromRedis(resultChan, resultErrChan, key)
+	resultErr := <-resultErrChan
+	var userJson string
+	if resultErr != nil {
+		var resultChan = make(chan interface{})
+		var resultBoolChan = make(chan bool)
+		go common.GetDataFromCache(resultChan, resultBoolChan, key)
+		found := <-resultBoolChan
+		if found {
+			result = <-resultChan
+			userJson = result.(string)
+			ch := common.GetRedisChannel()
+			msg := amqp.Publishing{
+				Headers: amqp.Table{
+					"type":  "set",
+					"key":   key,
+					"value": userJson,
+				},
+			}
+			ch.Publish("", "redis", false, false, msg)
+		} else {
+			dbClient := common.GetMongoDBClient()
+			ctx, cancel := common.GetContextWithTimeout(5 * time.Second)
+			defer cancel()
+			userCollection := dbClient.Database("colair").Collection("users")
+			userCollection.FindOne(ctx, bson.M{"uid": util.StringToInt64(userId)}).Decode(&user)
+			marshal, _ := json.Marshal(user)
+			userJson = string(marshal)
+			common.GetCache().Set(key, userJson, common.CacheExpire(1*24*time.Hour))
+			ch := common.GetRedisChannel()
+			msg := amqp.Publishing{
+				Headers: amqp.Table{
+					"type":  "set",
+					"key":   key,
+					"value": userJson,
+				},
+			}
+			ch.Publish("", "redis", false, false, msg)
+		}
+	} else {
+		result = <-resultChan
+		userJson = result.(string)
+	}
+	err := json.Unmarshal([]byte(userJson), &user)
 	if err != nil {
 		util.Response(c, http.StatusInternalServerError, 500, nil, err.Error())
 		return
@@ -106,6 +181,9 @@ func GetUserInfo(c *gin.Context) {
 }
 
 func Logout(c *gin.Context) {
+	var (
+		ch = common.GetRedisChannel()
+	)
 	token := c.GetString("token")
 	msg := amqp.Publishing{
 		Headers: amqp.Table{
